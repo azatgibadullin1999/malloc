@@ -6,7 +6,7 @@
 /*   By: larlena <larlena@student.42.fr>            +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2023/05/27 14:35:58 by larlena           #+#    #+#             */
-/*   Updated: 2023/06/20 09:00:12 by larlena          ###   ########.fr       */
+/*   Updated: 2023/06/20 19:17:14 by larlena          ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -14,9 +14,18 @@
 
 t_heap_head *g_heap = NULL;
 
+inline static bool is_meta_block__(size_t data);
+inline static bool is_free_block__(size_t data);
 inline static void *get_free_block__(size_t size);
+inline static void mark_block_as_free__(size_t *data);
 inline static void mark_block_as_occupied__(size_t *data);
+inline static t_block_head *get_next_block__(t_block_head *block);
+inline static t_block_head *get_prev_block__(t_block_head *block);
 inline static t_block_tail *get_current_block_tail__(t_block_head *block);
+static void free_heap__(t_heap_head *heap);
+static t_block_head *merge_adjacent_free_blocks__(t_block_head *block);
+static void *get_first_free_block__(t_block_head *block,
+				    t_block_head *(*iterate)(t_block_head *));
 
 void *malloc(size_t size) {
 	t_block_head *dst;
@@ -29,6 +38,25 @@ void *malloc(size_t size) {
 	dst->prev->next = dst->next;
 	get_current_block_tail__(dst)->data = dst->data;
 	return BLOCK_SHIFT(dst);
+}
+
+void free(void *ptr) {
+	t_block_head *block = ptr - sizeof(t_block_head);
+
+	if (ptr == NULL) {
+		return;
+	}
+	mark_block_as_free__(&block->data);
+	block = merge_adjacent_free_blocks__(block);
+	get_current_block_tail__(block)->data = block->data;
+	block->next = get_first_free_block__(block, get_next_block__);
+	block->prev = get_first_free_block__(block, get_prev_block__);
+	block->prev->next = block;
+	block->next->prev = block;
+	if (is_meta_block__(get_next_block__(block)->data) &&
+	    is_meta_block__(get_prev_block__(block)->data)) {
+		free_heap__((void *)block->prev - sizeof(t_heap_head));
+	}
 }
 
 /*
@@ -248,5 +276,59 @@ static void *get_free_block__(size_t input_size) {
 		}
 	}
 	trim_block__(block, size);
+	return block;
+}
+
+/*
+==============================
+	UTILS FOR FREE
+==============================
+*/
+
+inline static bool is_meta_block__(size_t data) { return data == 0; }
+
+static void free_heap__(t_heap_head *heap) {
+	if (heap->next) {
+		heap->next->prev = heap->prev;
+	}
+	if (heap->prev) {
+		heap->prev->next = heap->next;
+	}
+	if (heap == g_heap) {
+		g_heap = heap->next;
+	}
+	munmap(heap, heap->total_size);
+}
+
+static void *get_first_free_block__(t_block_head *block,
+				    t_block_head *(*iterate)(t_block_head *)) {
+	block = iterate(block);
+	while (block && (!is_free_block__(block->data) &&
+			 !is_meta_block__(block->data))) {
+		block = iterate(block);
+	}
+	return block;
+}
+
+static void merge_blocks__(t_block_head *first, t_block_head *second) {
+	set_block_size__(&first->data, __BLOCK_METADATA_SIZE__ +
+					   get_block_size__(first->data) +
+					   get_block_size__(second->data));
+	first->next = second->next;
+	get_current_block_tail__(first)->data = first->data;
+}
+
+static t_block_head *merge_adjacent_free_blocks__(t_block_head *block) {
+	t_block_head *buff;
+
+	buff = get_next_block__(block);
+	if (is_free_block__(buff->data)) {
+		merge_blocks__(block, buff);
+	}
+	buff = get_prev_block__(block);
+	if (is_free_block__(buff->data)) {
+		merge_blocks__(buff, block);
+		block = buff;
+	}
 	return block;
 }
